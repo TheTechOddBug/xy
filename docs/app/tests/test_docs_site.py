@@ -2762,7 +2762,10 @@ def test_other_api_owned_pages_append_focused_tables() -> None:
         "/styling/themes-and-tokens/": ("xy.theme",),
         "/integrations/reflex/": (
             "reflex_xy.chart",
+            "reflex_xy.data",
             "reflex_xy.figure",
+            "reflex_xy.scatter_chart",
+            "reflex_xy.line_chart",
             "reflex_xy.inline",
             "reflex_xy.append",
         ),
@@ -2781,6 +2784,29 @@ def test_other_api_owned_pages_append_focused_tables() -> None:
         assert api_path in adapter_api
     assert "Props" in adapter_api
     assert "Preview" not in adapter_api
+
+
+def test_reflex_integration_renders_the_state_backed_data_example() -> None:
+    """Keep the primary @rxy.data example visible as a live chart demo."""
+    page = next(
+        page for page in discover_docs(DOCS_CONFIG) if page.route == "/integrations/reflex/"
+    )
+    live_blocks = [
+        block
+        for block in parse_document(page.content).blocks
+        if isinstance(block, CodeBlock) and {"demo", "exec"} <= set(block.flags)
+    ]
+
+    assert len(live_blocks) == 2
+    state_backed = next(block for block in live_blocks if "@rxy.data" in block.content)
+    assert "rxy.scatter_chart(" in state_backed.content
+    state_rendered = str(
+        XyDocsMarkdownTransformer(
+            virtual_filepath=str(page.source_path.resolve()),
+            filename=str(page.source_path),
+        ).code_block(state_backed)
+    )
+    assert "XYChart" in state_rendered
 
 
 @pytest.mark.parametrize(
