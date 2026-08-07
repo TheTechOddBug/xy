@@ -473,15 +473,92 @@ drift from what binding will look up), and `.figure()` runs once — the full
 mark/config validation gate (X1/X2) at compile time, in milliseconds, with
 no data ingestion (constraint 2). The canonical JSON of the tree
 (`plan_version: 1`) is content-addressed into a sha256-prefix `digest` and
-registered in a process-local `{digest: plan}` map. Binding is the reverse:
+registered in a process-local `{digest: plan}` map. Fact X4 ("page bodies
+run in every worker") turned out to hold only for processes that run the
+frontend compile — **backend-only workers (dev backend subprocesses and
+prod workers) import the app module but leave pages unevaluated**, which
+would leave their plan maps empty and every plan subscription answering
+`err {resync}`. The integration therefore makes X4 true by construction:
+`setup(app)`'s lifespan evaluates the app's unevaluated page component
+functions once at worker startup (`_ensure_page_plans`), before serving —
+factories register their plans as a side effect and the built trees are
+discarded (plans and payload assets are content-addressed and idempotent).
+Failure is **fail-closed**: a page that cannot evaluate would leave this
+worker's plan map incomplete — behind a load balancer that means charts
+blank or not depending on which worker answers — so `_ensure_page_plans`
+collects every failing page and refuses worker startup with an error
+naming them, instead of serving inconsistently. "Refuses worker startup"
+depends on *where* the pass runs: Reflex starts a coroutine lifespan task
+with `asyncio.create_task(task())` and then yields, so an `async def`
+lifespan body would raise in the background on an already-serving worker —
+fail-open, the shape this exists to prevent. The registered task is
+therefore a plain function that runs `_ensure_page_plans` synchronously and
+*returns* the sweep coroutine; the raise happens in the `task()` call, in
+Reflex's startup path, before serving. Pinned by
+`test_page_plan_registration.py::test_page_evaluation_runs_before_the_lifespan_coroutine_is_scheduled`.
+The contract this puts on
+app code is **re-evaluability**: a page body runs at least twice per
+process (the compile, then this pass) and must build the same charts each
+time. Code that mutates module state a later page body reads — the docs
+site's Markdown demo runner cached exec fences in one page-wide module
+namespace, so a second render rebuilt each demo from the *last* fence's
+data — either changes plan digests (leaving the compiled frontend's token
+unregistered) or fails outright here; a page that only fails on the second
+evaluation still passes `reflex run`'s compile, so the fail-closed error is
+the check that catches it. Binding is the reverse:
 columns + plan → a **fresh** `Chart` (never reused — X3) → `.figure()`.
 Column-mismatch errors name both sides (*"plan binds column 'mag';
 Dash.cloud produced {x, y}"*). Plans refuse concrete arrays, per-mark
 `data=`, and `render=` components — data-free structure only. The probe
 figure also yields `dom_class_strings()`, so **live data-bound charts get
 automatic Tailwind discovery** (previously live sources needed the manual
-inventory). The factories that build plans, and the errors they catch at
-`reflex run`, are §5.
+inventory).
+
+**Factories.** `factories.py` provides the flat per-kind forms
+(`reflex_xy.scatter_chart(data=…, x="x", y="y", …)`) and the composed
+`reflex_xy.chart(*nodes, data=…)` for multi-mark charts, plus curated
+re-exports of the xy node constructors (`reflex_xy.scatter` *is*
+`xy.scatter`, so a hallucinated constructor dies at import instead of
+surviving to hydrate). The kwarg partition between mark options, chrome,
+component props, and event handlers is derived from `inspect.signature` at
+import — not hand-listed — so it cannot drift from xy's own signatures;
+collisions get generated aliases (`mark_<name>`, with `width` becoming
+`stroke_width` where the mark hasn't claimed it), pinned by test. Derivation
+is filtered on one axis only: underscore-prefixed signature params are xy's
+private adapter knobs (the pyplot shim's `_artist_alpha`, `_marker_path`, …)
+and are excluded from both the accepted set and the did-you-mean
+candidates — deriving the public surface from signatures must not promote
+private names into it. Top-level
+kwargs are **strict**: an unknown name always raises `TypeError` at page
+evaluation — with a did-you-mean when a known name is close — and never
+silently becomes a CSS property (the R8 hazard, closed rather than
+compensated for by a distance threshold); CSS goes through the explicit
+`style={...}` prop, which reaches the DOM unchanged. Errors
+this tier catches at `reflex run`: hallucinated factory names (import),
+unknown kwargs (partition), bad colormaps/enums/axis
+refs (zero-row probe), unknown column names against a typed data var
+(schema channel), and the wrong var or a raw string in `data=` (typed
+prop, R1).
+
+**Static tier symmetry.** `data=` given a concrete mapping (not a Var)
+binds immediately and routes to the §3.4 payload-asset path — same
+validation, same spec-aware bind errors, works under `reflex export`,
+never touches the registry.
+
+**Kind coverage (recorded decision).** Flat factories exist for every mark
+kind whose validators compile zero-row — scatter, line, histogram, bar,
+area, step, stem, column, errorbar, error_band, segments — each derived
+from the mark's signature, and the composed `reflex_xy.chart(*nodes,
+data=...)` accepts any mix of those marks plus annotations and chrome.
+Aggregating kinds whose validators require at least one finite value (box,
+violin, hexbin, contour, heatmap, stairs, ecdf) and the data-taking
+composite factories (pie, radar, wind_rose, sankey — eager numeric work at
+call time) are **excluded from the plan tier**: the probe refuses them with
+an error naming the two supported routes (`@reflex_xy.figure`, or a
+concrete xy Chart on the static tier). Extending them would need
+value-independent validation or a synthetic-row probe whose failures could
+depend on made-up values — rejected as a silent decimation of the compile
+guarantee (§28 spirit).
 
 **Column entries.** Published columns are registry entries in their own
 right, keyed by the data token: pure rebuildable caches of Reflex state
@@ -837,6 +914,57 @@ changes — builders are user code and should be O(state); heavy shared data
 prep belongs outside the builder (module cache / backend var), which the
 demo app models.
 
+**Plan-tier costs (measured).** The data-bound tier moves work to page
+evaluation and worker startup; `scripts/bench_reflex_plans.py` measures it
+reproducibly (`uv run python scripts/bench_reflex_plans.py [--json]`).
+Recorded 2026-08-06 (Linux, Python 3.12, native core, dev machine):
+
+| metric | recorded | scale contract |
+|---|---|---|
+| plan build (compile + probe + digest) | 0.26 ms median | per chart factory call, milliseconds — page evaluation stays compile-scale |
+| worker startup page evaluation | 15 ms (20 pages × 4 charts) | `_ensure_page_plans` re-runs pages once per worker boot; linear in charts |
+| column republish → new mounted payload | see the sweep below | dominated by the dependent figure build, not registry bookkeeping |
+| plan map entry | ~1.5 KB/plan | process-lifetime map, bounded by page code |
+
+Republish is recorded as a **sweep**, not as one number: "state deltas are
+independent of data size, a republish is one screen-bounded reship" is a
+scaling claim, and a single measurement at a single N is consistent with
+every growth curve while revealing none of them. The sweep straddles
+`SCATTER_DENSITY_THRESHOLD` (200k) so both regimes are visible — below it
+each republish rebuilds a full exact-marker figure, above it the density
+tier takes over — and the range spans the direct soft ceiling (2M). Each size
+is measured over `REPUBLISH_TRIALS` independent trials, because at the top of
+the sweep run-to-run variance is comparable to the gap between neighbouring
+sizes: a single median per size cannot tell a trend from noise, and reading
+one high point as a trend is precisely the error this table must not invite.
+Recorded 2026-08-06 (Linux, Python 3.11, native core, CI-class container; a
+faster dev machine records lower across the board, so the contract is the
+*shape* of the normalized column, not its constant):
+
+| points | republish | per 1M points | per 1M across trials |
+|---|---|---|---|
+| 10,000 | 0.23 ms | 22.81 ms | 21.54 – 24.78 |
+| 100,000 | 1.22 ms | 12.22 ms | 12.09 – 12.47 |
+| 1,000,000 | 2.95 ms | 2.95 ms | 2.94 – 3.06 |
+| 2,000,000 | 5.72 ms | 2.86 ms | 2.78 – 2.87 |
+| 5,000,000 | 13.83 ms | 2.77 ms | 2.65 – 2.90 |
+
+The normalized column falls steeply while fixed per-publish work still
+dominates, then settles into a band — ~2.7–3.1 ms/1M from 1M up, with the
+three large sizes' trial ranges overlapping. Above the threshold the cost is
+the per-point figure build the republish fans out, and nothing is growing
+faster than it.
+
+The regression signal is the normalized value at the top of the sweep rising
+*clear of that band* — a second pass over the columns, a copy that used to be
+a view — not any increase between adjacent rows. Neighbouring sizes here
+differ by less than the spread within a single size, so a one-row uptick is
+noise until a trial range separates it. Compare bands, not medians.
+
+Re-record when the probe or serialization changes materially; a plan build
+drifting toward tens of milliseconds, or a republish cost growing faster
+than its figure build, is a regression against this table.
+
 ## 7. What shipped where (prototype map)
 
 ```
@@ -851,6 +979,9 @@ python/reflex_xy/
   data_vars.py               @reflex_xy.data (DataVar: columns in, handle out)
   plan.py                    ChartPlan: zero-row probe, canonical digest,
                              process-local plan map, bind (§3.6)
+  factories.py               scatter/line/histogram/bar_chart flat factories +
+                             composed chart(*nodes): signature-derived kwarg
+                             partition, schema checks, plan/data/static mount
   state_bridge.py            token -> state_manager -> builder/data/plan
                              rebuild hooks
   namespace.py               XYNamespace: sub/unsub/msg, payload/msg/err,
@@ -858,7 +989,7 @@ python/reflex_xy/
                              binary attachments
   app.py                     setup(app), XYPlugin (post_compile), lifespan
   component.py               chart(figure=...) -> rx.Component (local-JSX
-                             library); typed figure prop; static tier
+                             library); typed figure/data props; static tier
   payload_asset.py           static tier: Chart -> content-addressed XYBF
                              asset in assets/xy/ (§3.4)
   assets/                    XYChart.jsx; links xy's installed render client
@@ -876,7 +1007,7 @@ examples/reflex/  (repo root) Reflex showcase: figure-var drilldown with
                              whose category toggles re-bin kernel-side, §34)
 examples/fastapi/ (repo root) the same charts + a live 100M drilldown served
                              from a plain FastAPI app (no committed HTML)
-tests/reflex_adapter/        token/registry/var/data-var/plan/bridge/
+tests/reflex_adapter/        token/registry/var/data-var/plan/factory/bridge/
                              payload-asset units, component compile, framework
                              contract pins (R1/R7/R8), and a real-websocket
                              integration suite (uvicorn + socketio client)

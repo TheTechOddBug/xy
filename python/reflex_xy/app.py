@@ -13,7 +13,8 @@ Two equivalent entry points, both one line for the user:
 What setup does: registers the `/_xy` socket.io namespace on the app's
 existing AsyncServer (same physical websocket as the app plane — see
 namespace.py), wires publish fan-out, and adds a lifespan task that
-captures the event loop (for thread-safe broadcasts from sync handlers)
+registers this worker's chart plans (`_ensure_page_plans`, fail-closed),
+captures the event loop (for thread-safe broadcasts from sync handlers),
 and runs the registry TTL sweep.
 """
 
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Coroutine
 from typing import Any, Optional
 
 from reflex.plugins import Plugin
@@ -58,9 +60,67 @@ def setup(app: Any) -> XYNamespace:
     namespace = XYNamespace(registry, rebuild=make_rebuild_hook(app))
     sio.register_namespace(namespace)
     wire(namespace)
-    app.register_lifespan_task(_xy_lifespan)
+
+    def _lifespan() -> Coroutine[Any, Any, None]:
+        # Deliberately a *sync* function returning the sweep coroutine, not an
+        # `async def`. Reflex starts a coroutine lifespan task with
+        # `asyncio.create_task(task())` and then yields, so anything raised
+        # inside an `async def` body surfaces in the background *after* the
+        # worker is already serving — exactly the fail-open shape
+        # `_ensure_page_plans` exists to prevent. Reflex calls `task()` inline
+        # to *get* that coroutine, before create_task and before the lifespan
+        # yields, so raising from this body aborts startup instead.
+        _ensure_page_plans(app)
+        return _xy_lifespan()
+
+    app.register_lifespan_task(_lifespan)
     _namespace = namespace
     return namespace
+
+
+def _ensure_page_plans(app: Any) -> None:
+    """Evaluate the app's page component functions so chart plans register.
+
+    The data-bound tier's plan map is process-local and populated by the
+    chart factories *as page bodies run* (reflex-integration.md §3.6). A
+    backend-only worker — dev backend subprocesses and prod workers alike —
+    imports the app module but skips the frontend compile, so its pages sit
+    unevaluated and every plan subscription would answer `err {resync}`
+    forever. Running the page functions here makes "the plan map is
+    populated in every worker" true by construction; the built component
+    trees are discarded (plans and payload assets are content-addressed and
+    idempotent).
+
+    Failure is fail-closed: a page that cannot evaluate here leaves this
+    worker with an incomplete plan map, and behind a load balancer that is
+    the worst failure shape there is — charts blank or not depending on
+    which worker answers, with only a startup warning to explain it. Every
+    failing page is collected and the worker refuses to start, naming the
+    pages; the same page code already fails `reflex run`'s real compile, so
+    a healthy deployment never hits this. "Refuses to start" is load-bearing
+    and depends on *where* this runs: `setup`'s lifespan calls it in the
+    synchronous part of the task, before Reflex schedules the sweep
+    coroutine, so the exception aborts lifespan startup rather than landing
+    in a background task on an already-serving worker.
+    """
+    pages = getattr(app, "_unevaluated_pages", None) or {}
+    failures: list[str] = []
+    for route, page in dict(pages).items():
+        component = getattr(page, "component", None)
+        if not callable(component):
+            continue  # already-built component instances registered at add_page
+        try:
+            component()
+        except Exception as exc:  # noqa: BLE001 - user page code is an input boundary
+            failures.append(f"{route!r}: {type(exc).__name__}: {exc}")
+    if failures:
+        msg = (
+            "reflex_xy: evaluating page component functions for chart-plan "
+            "registration failed on this worker; serving would leave its "
+            "plan map incomplete (load-balancer-dependent blank charts), "
+            "so startup is refused. Failing pages: " + "; ".join(sorted(failures))
+        )
+        raise RuntimeError(msg)
 
 
 def wire(namespace: XYNamespace) -> None:
