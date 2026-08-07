@@ -47,7 +47,7 @@ def test_digest_golden_pins_the_plan_format():
     assert plan.digest == "b7d0b4245b686130e37d"
 
 
-def test_zero_row_probe_fires_the_full_validation_gate():
+def test_probe_fires_the_full_validation_gate():
     with pytest.raises(ValueError, match="colormap"):
         scatter_plan(colormap="virids")
     with pytest.raises(ValueError, match="symbol"):
@@ -55,6 +55,177 @@ def test_zero_row_probe_fires_the_full_validation_gate():
     # unresolved axis-id references are figure-compile errors too (X2)
     with pytest.raises(ValueError, match="axis"):
         build_plan("scatter_chart", (xy.scatter("x", "y", y_axis="y2"),), {})
+
+
+def test_aggregating_kinds_build_zero_row_plans():
+    """Every aggregating kind compiles a plan zero-row (the old exclusion is
+    gone, and so are the synthetic columns that replaced it): under the
+    core's structural_probe() mode the marks validate config and skip
+    aggregation, with grouped/coordinate/weight channels recorded like any
+    other."""
+    cases = [
+        ("box_chart", (xy.box("v", group="g"),), {"v", "g"}),
+        ("violin_chart", (xy.violin("v"),), {"v"}),
+        ("hexbin_chart", (xy.hexbin("a", "b", C="w"),), {"a", "b", "w"}),
+        ("contour_chart", (xy.contour("grid", x="xs", y="ys"),), {"grid", "xs", "ys"}),
+        ("heatmap_chart", (xy.heatmap("grid"),), {"grid"}),
+        ("stairs_chart", (xy.stairs("counts", "edges"),), {"counts", "edges"}),
+        ("ecdf_chart", (xy.ecdf("v"),), {"v"}),
+    ]
+    for kind, children, expected in cases:
+        plan = build_plan(kind, children, {})
+        assert set(plan.columns) == expected, kind
+
+
+def test_structural_probe_still_fails_bad_aggregating_config():
+    """No synthetic data does not mean no validation: configuration errors
+    of the aggregating kinds fail the zero-row probe exactly like scatter's
+    bad colormap does."""
+    cases = [
+        ("box orientation", (xy.box("v", orientation="diagonal"),)),
+        ("violin bins", (xy.violin("v", bins=2),)),
+        ("hexbin gridsize", (xy.hexbin("a", "b", gridsize=0),)),
+        ("hexbin range", (xy.hexbin("a", "b", range=(0.0, 0.5)),)),
+        ("hexbin mincnt", (xy.hexbin("a", "b", mincnt=-1),)),
+        ("contour levels", (xy.contour("grid", levels=0),)),
+        ("contour extend", (xy.contour("grid", extend="sideways"),)),
+        ("heatmap colormap", (xy.heatmap("grid", colormap="virids"),)),
+        ("stairs where", (xy.stairs("counts", where="diagonal"),)),
+        ("ecdf bins", (xy.ecdf("v", bins=-1),)),
+    ]
+    for label, children in cases:
+        with pytest.raises(ValueError, match=label.split(" ")[-1]):
+            build_plan("chart", children, {})
+
+
+def test_shared_columns_between_aggregating_and_zero_row_marks_probe():
+    """The review's repro: stairs (values len k, edges len k+1) composed
+    with a scatter that reads the same 'edges' column. Synthetic per-name
+    shapes made the scatter probe see lengths 9 and 0; the all-empty
+    structural probe has no lengths to disagree about, and the real mixed-
+    length data binds."""
+    plan = build_plan(
+        "chart",
+        (xy.stairs("counts", "edges"), xy.scatter("edges", "other")),
+        {},
+    )
+    assert set(plan.columns) == {"counts", "edges", "other"}
+    fig = plan.bind(
+        {
+            "counts": np.arange(8.0),
+            "edges": np.arange(9.0),
+            "other": np.arange(9.0) * 2.0,
+        }
+    ).figure()
+    assert len(fig.traces) == 2
+
+
+def test_hexbin_value_dependent_configs_probe_without_aggregating():
+    """The review's other repro class: a range that excludes any invented
+    points, a mincnt that filters them, or a maximal gridsize must not fail
+    (or allocate) at page evaluation — those are data outcomes, computed
+    only when real data binds."""
+    for kwargs in (
+        {"range": ((0.0, 0.5), (0.0, 0.5))},
+        {"mincnt": 5},
+        {"gridsize": 2048},
+    ):
+        plan = build_plan("hexbin_chart", (xy.hexbin("a", "b", **kwargs),), {})
+        assert set(plan.columns) == {"a", "b"}
+    # and the range case renders with real in-range data
+    plan = build_plan("hexbin_chart", (xy.hexbin("a", "b", range=((0.0, 0.5), (0.0, 0.5))),), {})
+    fig = plan.bind({"a": [0.1, 0.2, 0.3], "b": [0.1, 0.2, 0.3]}).figure()
+    assert fig.traces[0].kind == "hexbin"
+
+
+def test_shaped_and_zero_row_marks_compose_and_share_columns():
+    plan = build_plan("chart", (xy.histogram("v"), xy.ecdf("v")), {})
+    assert plan.columns == ("v",)
+
+
+def test_named_callables_digest_and_lambdas_are_refused():
+    """hexbin's reduce_C_function default (np.mean) content-addresses as its
+    import path plus a code fingerprint, so identical trees agree across
+    workers and different reducers disagree. A lambda has no stable name
+    and cannot keep digests faithful; it is refused toward a module-level
+    function or the hatch."""
+    hexbin_plan = build_plan("hexbin_chart", (xy.hexbin("a", "b", C="w"),), {})
+    again = build_plan("hexbin_chart", (xy.hexbin("a", "b", C="w"),), {})
+    assert hexbin_plan.digest == again.digest
+    reduced = build_plan(
+        "hexbin_chart", (xy.hexbin("a", "b", C="w", reduce_C_function=np.median),), {}
+    )
+    assert reduced.digest != hexbin_plan.digest
+    with pytest.raises(PlanError, match="stable qualified name"):
+        build_plan(
+            "hexbin_chart",
+            (xy.hexbin("a", "b", C="w", reduce_C_function=lambda values: values.max()),),
+            {},
+        )
+
+
+def test_bound_methods_are_refused_as_plan_callables():
+    """The review's repro: two bound reducers with different instance state
+    used to serialize identically (module.qualname) — last-write-wins then
+    made the first chart execute the second reducer. Instance state has no
+    content address, so bound methods are refused outright."""
+
+    class Quantile:
+        def __init__(self, q: float) -> None:
+            self.q = q
+
+        def reduce(self, values: np.ndarray) -> float:
+            return float(np.quantile(values, self.q))
+
+    with pytest.raises(PlanError, match="bound method"):
+        build_plan(
+            "hexbin_chart",
+            (xy.hexbin("a", "b", C="w", reduce_C_function=Quantile(0.5).reduce),),
+            {},
+        )
+
+
+def test_callable_digest_follows_the_body_not_only_the_name():
+    """A qualified name is identity, not content: editing a module-level
+    reducer's body must change the digest (a rolling deployment otherwise
+    executes two behaviors behind one address)."""
+    import sys
+    import types
+
+    def module_reducer(body: str):
+        module = types.ModuleType("plan_test_reducers")
+        sys.modules["plan_test_reducers"] = module
+        exec(  # noqa: S102 - building a same-qualname function pair for the pin
+            f"import numpy as np\ndef reduce(values):\n    return {body}\n",
+            module.__dict__,
+        )
+        return module.__dict__["reduce"]
+
+    first = module_reducer("float(np.mean(values))")
+    digest_one = build_plan(
+        "hexbin_chart", (xy.hexbin("a", "b", C="w", reduce_C_function=first),), {}
+    ).digest
+    second = module_reducer("float(np.max(values))")  # same module.qualname
+    digest_two = build_plan(
+        "hexbin_chart", (xy.hexbin("a", "b", C="w", reduce_C_function=second),), {}
+    ).digest
+    assert digest_one != digest_two
+    sys.modules.pop("plan_test_reducers", None)
+
+
+def test_closures_are_refused_as_plan_callables():
+    def make_reducer(q: float):
+        def reduce(values: np.ndarray) -> float:
+            return float(np.quantile(values, q))
+
+        return reduce
+
+    with pytest.raises(PlanError, match="stable qualified name"):
+        build_plan(
+            "hexbin_chart",
+            (xy.hexbin("a", "b", C="w", reduce_C_function=make_reducer(0.5)),),
+            {},
+        )
 
 
 def test_plans_refuse_concrete_arrays():

@@ -5,12 +5,19 @@ A plan is the server-side half of the composite figure identity
 node tree with **string channels only**, compiled once at page evaluation.
 
 - **Build** (factory call = page evaluation = Reflex compile): construct the
-  real xy tree, bind a zero-row placeholder column for every referenced
-  channel name, and call ``.figure()`` once — the full mark/config
-  validation gate (facts X1/X2, pinned in tests/test_validation_timing.py)
-  runs in milliseconds with no real data. The probe figure is discarded;
-  what is kept is the digest, the recorded column names, and (for live
-  charts) the probe's Tailwind class inventory.
+  real xy tree, bind a **zero-row** placeholder column for every referenced
+  channel name, and call ``.figure()`` once under the core's
+  ``structural_probe()`` mode — the mark/config validation gate (facts
+  X1/X2, pinned in tests/test_validation_timing.py) runs in milliseconds
+  with no real data and **no invented data**: in probe mode a mark whose
+  channels are all empty validates its configuration (enums, bounds,
+  colormaps, range shapes) and skips aggregation, so a probe failure always
+  indicts the chart's structure, and no value-dependent check (hexbin
+  range/mincnt filtering, contour marching, quantiles) can fire on
+  placeholder values or allocate at page evaluation. Real-data shape
+  contracts (coupled lengths, z's 2-D-ness) stay at bind. The probe figure
+  is discarded; what is kept is the digest, the recorded column names, and
+  (for live charts) the probe's Tailwind class inventory.
 - **Serialize**: nodes → canonical JSON (sorted keys, ``plan_version``) →
   sha256 prefix = ``digest``. The digest is a *content address*: every
   worker that evaluates the page derives the same digest and holds the plan
@@ -31,13 +38,16 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
+import importlib
 import json
+import sys
+import types
 from collections.abc import Mapping
 from typing import Any, Optional
 
 import numpy as np
 
-from xy.components import Chart, Component, Mark
+from xy.components import Chart, Component, Mark, structural_probe
 
 __all__ = [
     "PLAN_VERSION",
@@ -52,12 +62,6 @@ __all__ = [
 
 PLAN_VERSION = 1
 _DIGEST_CHARS = 20  # sha256 hex prefix; content address for a process-local map
-
-#: Mark kinds whose figure-compile validators require at least one finite
-#: value (they aggregate: quantiles, bins, meshes). The zero-row probe
-#: cannot compile them, so they are excluded from the plan tier — the
-#: Phase 3 decision recorded in reflex-component-api-implementation.md.
-_NEEDS_DATA_MARKS = frozenset({"box", "violin", "hexbin", "contour", "heatmap", "stairs", "ecdf"})
 
 
 class PlanError(ValueError):
@@ -85,7 +89,10 @@ class _ProbeTable(Mapping):
     ``Chart.figure()`` resolves string channels through ``data[name]``
     (the exact production code path), so the recorded names are *derived*
     from the real resolution logic — the plan's column list can never drift
-    from what binding will actually look up.
+    from what binding will actually look up. Every column is empty: under
+    ``structural_probe()`` the marks validate configuration against empty
+    channels and never aggregate, so no synthetic values exist for a
+    validator to (falsely) accept or reject.
     """
 
     def __init__(self) -> None:
@@ -103,6 +110,97 @@ class _ProbeTable(Mapping):
         return len(self.seen)
 
 
+def _code_fingerprint(fn: Any) -> str:
+    """Content hash of a pure-Python function's behavior.
+
+    A qualified name is *identity*, not *content*: hashing only the import
+    path would keep the digest stable while the function body changes (a
+    rolling deployment then executes two behaviors behind one address). The
+    fingerprint covers the bytecode, referenced names, nested code objects,
+    and default values. It is deterministic across processes for one
+    interpreter version; across differing interpreter versions digests
+    diverge and stale clients resync — fail-safe, never silently wrong.
+    """
+    h = hashlib.sha256()
+
+    def feed(code: types.CodeType) -> None:
+        h.update(code.co_code)
+        h.update(",".join(code.co_names).encode())
+        h.update(",".join(code.co_varnames).encode())
+        for const in code.co_consts:
+            if isinstance(const, types.CodeType):
+                feed(const)
+            elif isinstance(const, frozenset):
+                # frozenset repr order follows per-process string hashing;
+                # sort for a process-independent byte stream.
+                h.update(",".join(sorted(map(repr, const))).encode())
+            else:
+                h.update(repr(const).encode())
+
+    feed(fn.__code__)
+    h.update(repr(getattr(fn, "__defaults__", None)).encode())
+    h.update(repr(getattr(fn, "__kwdefaults__", None)).encode())
+    return h.hexdigest()[:16]
+
+
+def _resolve_qualname(module: str, qualname: str) -> Any:
+    """The object ``module.qualname`` names right now, or None."""
+    try:
+        target: Any = importlib.import_module(module)
+        for part in qualname.split("."):
+            target = getattr(target, part)
+    except Exception:  # noqa: BLE001 - resolution failure means "not addressable"
+        return None
+    return target
+
+
+def _callable_address(value: Any, context: str) -> dict[str, str]:
+    """Serialize one plan callable as a true content address (fail closed).
+
+    Bound methods are refused outright: the instance state behind
+    ``__self__`` has no content address, so two differently configured
+    instances would collide on one digest and last-write-wins registration
+    would silently swap behavior. Pure-Python functions carry a code
+    fingerprint beside their import path; C-level callables (ufuncs,
+    builtins) must resolve back to the same object by name and carry their
+    distribution's version, which is what pins their behavior.
+    """
+    if getattr(value, "__self__", None) is not None:
+        raise PlanError(
+            f"{context} holds a bound method ({value!r}). The instance state "
+            "behind it has no content address, so differently configured "
+            "instances would collide on one plan digest. Use a module-level "
+            "function, or build the chart with @reflex_xy.figure."
+        )
+    module = getattr(value, "__module__", "") or ""
+    qualname = getattr(value, "__qualname__", "") or ""
+    if not module or not qualname or "<" in module or "<" in qualname:
+        raise PlanError(
+            f"{context} holds a {type(value).__name__} without a stable "
+            "qualified name (a lambda, closure, or partial?), which cannot "
+            "be content-addressed into a chart plan. Use a module-level "
+            "function, or build the chart with @reflex_xy.figure."
+        )
+    code = getattr(value, "__code__", None)
+    if code is not None:
+        if code.co_freevars:
+            raise PlanError(
+                f"{context} holds a closure ({module}.{qualname}), whose "
+                "captured variables have no content address. Use a module-"
+                "level function, or build the chart with @reflex_xy.figure."
+            )
+        return {"~callable": f"{module}.{qualname}", "code": _code_fingerprint(value)}
+    if _resolve_qualname(module, qualname) is not value:
+        raise PlanError(
+            f"{context} holds {value!r}, whose qualified name "
+            f"{module}.{qualname!r} does not resolve back to it — the name "
+            "cannot address this callable across workers. Use a module-level "
+            "function, or build the chart with @reflex_xy.figure."
+        )
+    root = sys.modules.get(module.split(".", 1)[0])
+    return {"~callable": f"{module}.{qualname}", "dist": str(getattr(root, "__version__", ""))}
+
+
 def _plain(value: Any, context: str) -> Any:
     """Canonical JSON-able copy of one plan node field (fail closed)."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -118,6 +216,8 @@ def _plain(value: Any, context: str) -> Any:
         return value.item()
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    if callable(value):
+        return _callable_address(value, context)
     raise PlanError(
         f"{context} holds a {type(value).__name__}, which cannot be part of a "
         "data-bound chart plan. Plans are data-free structure: bind columns "
@@ -180,29 +280,13 @@ def build_plan(
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:_DIGEST_CHARS]
 
     # The compile-time validation gate: bind zero-row placeholders for every
-    # string channel and compile once. Errors surface here — at page
-    # evaluation — with the ordinary xy messages.
+    # string channel and compile once under the core's structural-probe
+    # mode — configuration validates, aggregation never runs on invented
+    # values. Errors surface here — at page evaluation — with the ordinary
+    # xy messages.
     probe = _ProbeTable()
-    try:
+    with structural_probe():
         probe_figure = Chart(kind, children, data=probe, **chart_props).figure()
-    except ValueError as exc:
-        needy = sorted(
-            {
-                child.kind
-                for child in children
-                if isinstance(child, Mark) and child.kind in _NEEDS_DATA_MARKS
-            }
-        )
-        if needy:
-            raise PlanError(
-                f"{', '.join(needy)} marks aggregate their values, so their "
-                "validators need at least one row — the zero-row plan probe "
-                "cannot compile them. Data-bound charts exclude these kinds "
-                "(recorded in reflex-component-api-implementation.md, Phase 3 "
-                "decision); build the chart with @reflex_xy.figure, or pass "
-                "a concrete xy Chart to reflex_xy.chart() for the static tier."
-            ) from exc
-        raise
     tailwind_classes = " ".join(probe_figure.dom_class_strings())
 
     plan = ChartPlan(
@@ -224,8 +308,18 @@ _PLANS: dict[str, ChartPlan] = {}
 
 
 def register_plan(plan: ChartPlan) -> ChartPlan:
-    """Idempotently register a plan under its digest; returns the canonical one."""
-    return _PLANS.setdefault(plan.digest, plan)
+    """Register a plan under its digest; returns the registered one.
+
+    Last write wins (idempotent for identical content — the digest is the
+    content address): after a hot reload re-evaluates the page, the fresh
+    node objects replace the stale ones. An edited pure-Python callable
+    changes the digest itself (its code fingerprint is part of the
+    serialization), so behavior can never swap silently behind a stable
+    address; C-level callables are pinned by import path + distribution
+    version instead.
+    """
+    _PLANS[plan.digest] = plan
+    return plan
 
 
 def plan_of(digest: str) -> Optional[ChartPlan]:

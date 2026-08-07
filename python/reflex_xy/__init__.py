@@ -73,15 +73,23 @@ _EXPORTS = {
     "chart": ".factories",
     "area_chart": ".factories",
     "bar_chart": ".factories",
+    "box_chart": ".factories",
     "column_chart": ".factories",
+    "contour_chart": ".factories",
+    "ecdf_chart": ".factories",
     "error_band_chart": ".factories",
     "errorbar_chart": ".factories",
+    "heatmap_chart": ".factories",
+    "hexbin_chart": ".factories",
     "histogram_chart": ".factories",
     "line_chart": ".factories",
     "scatter_chart": ".factories",
     "segments_chart": ".factories",
+    "stairs_chart": ".factories",
     "stem_chart": ".factories",
     "step_chart": ".factories",
+    "triangle_mesh_chart": ".factories",
+    "violin_chart": ".factories",
     "AsyncDataVar": ".data_vars",
     "DataVar": ".data_vars",
     "data": ".data_vars",
@@ -111,11 +119,12 @@ _EXPORTS = {
 #: `xy.scatter`, so composed data-bound charts read uniformly
 #: (`reflex_xy.chart(reflex_xy.scatter("x", "y"), data=...)`) and a
 #: hallucinated constructor dies at import against this explicit map
-#: instead of surviving to hydrate. Marks whose validators need data
-#: (box, violin, hexbin, …) are still listed — the plan probe refuses them
-#: with the recorded Phase 3 guidance rather than a misleading
-#: AttributeError. Chart factories are deliberately absent: the flat
-#: `*_chart` names above are reflex-native factories, not xy's.
+#: instead of surviving to hydrate. Every standalone mark kind is plan-
+#: compatible: the aggregating ones (box, violin, hexbin, …) probe
+#: zero-row under the core's structural_probe() mode — config validates,
+#: aggregation never runs on invented values.
+#: Chart factories are deliberately absent: the flat `*_chart` names above
+#: are reflex-native factories, not xy's.
 _XY_REEXPORTS = frozenset(
     {
         # marks
@@ -137,6 +146,7 @@ _XY_REEXPORTS = frozenset(
         "hexbin",
         "contour",
         "heatmap",
+        "triangle_mesh",
         # annotations
         "vline",
         "hline",
@@ -195,6 +205,7 @@ __all__ = [
     "bar",
     "bar_chart",
     "box",
+    "box_chart",
     "callout",
     "chart",
     "clear_selection",
@@ -202,8 +213,10 @@ __all__ = [
     "column",
     "column_chart",
     "contour",
+    "contour_chart",
     "data",
     "ecdf",
+    "ecdf_chart",
     "error_band",
     "error_band_chart",
     "errorbar",
@@ -211,7 +224,9 @@ __all__ = [
     "export_config",
     "figure",
     "heatmap",
+    "heatmap_chart",
     "hexbin",
+    "hexbin_chart",
     "histogram",
     "histogram_chart",
     "hline",
@@ -238,6 +253,7 @@ __all__ = [
     "setup",
     "spring",
     "stairs",
+    "stairs_chart",
     "stem",
     "stem_chart",
     "step",
@@ -248,7 +264,10 @@ __all__ = [
     "threshold",
     "threshold_zone",
     "tooltip",
+    "triangle_mesh",
+    "triangle_mesh_chart",
     "violin",
+    "violin_chart",
     "vline",
     "x_axis",
     "x_band",
@@ -421,6 +440,7 @@ if TYPE_CHECKING:
         threshold,
         threshold_zone,
         tooltip,
+        triangle_mesh,
         violin,
         vline,
         x_axis,
@@ -446,16 +466,24 @@ if TYPE_CHECKING:
     from .factories import (
         area_chart,
         bar_chart,
+        box_chart,
         chart,
         column_chart,
+        contour_chart,
+        ecdf_chart,
         error_band_chart,
         errorbar_chart,
+        heatmap_chart,
+        hexbin_chart,
         histogram_chart,
         line_chart,
         scatter_chart,
         segments_chart,
+        stairs_chart,
         stem_chart,
         step_chart,
+        triangle_mesh_chart,
+        violin_chart,
     )
     from .handles import DataHandle, FigureHandle
     from .namespace import XY_NAMESPACE, XYNamespace
