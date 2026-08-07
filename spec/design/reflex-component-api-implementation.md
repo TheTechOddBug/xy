@@ -390,7 +390,7 @@ replaces synthetic data with a **core structural-validation seam**:
 probe"), under which an all-empty mark validates configuration and skips
 aggregation. Every kind probes zero-row. Landed with it:
 
-- Flat factories for all 19 standalone kinds (`box_chart`,
+- Flat factories for all 20 standalone kinds (`funnel_chart`, `box_chart`,
   `violin_chart`, `ecdf_chart`, `hexbin_chart`, `contour_chart`,
   `heatmap_chart`, `stairs_chart`, `triangle_mesh_chart` beside the
   eleven zero-row-safe kinds).
@@ -407,7 +407,7 @@ aggregation. Every kind probes zero-row. Landed with it:
 - Pinned by `tests/reflex_adapter/test_plan.py` (zero-row plans per kind,
   the review's shared-column and hexbin-config repros, callable
   addressing incl. bound-method refusal and body-sensitive digests),
-  `test_factories.py` (the full 19-kind flat table), and
+  `test_factories.py` (the full 20-kind flat table), and
   `tests/test_validation_timing.py` (the xy half: every kind compiles
   empty under the probe, still refuses empty normally, still raises
   config errors under the probe). Recorded in reflex-integration.md §3.6

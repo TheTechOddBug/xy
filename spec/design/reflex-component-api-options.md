@@ -915,7 +915,8 @@ and small):
   `xy.structural_probe()` mode, under which an all-empty mark validates
   configuration and skips aggregation, so every kind probes zero-row with
   no synthetic data at all. Every standalone mark kind now has a flat
-  factory and composes; only the data-taking composite factories
+  factory and composes, including funnel with its stage-axis/cross-axis
+  defaults preserved; only the data-taking composite factories
   (pie, radar, wind_rose, sankey) stay on the static/escape-hatch routes.
   Details: reflex-integration.md §3.6 "Kind coverage",
   spec/api/chart-kind-contract.md "Structural probe", and the

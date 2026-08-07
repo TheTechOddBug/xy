@@ -503,11 +503,12 @@ degrades to first-execution validation.
 xy nodes (string channels only) into a `ChartPlan`: the real tree is built,
 placeholder columns are bound for every referenced channel through
 the production resolution path (a recording table — the column list cannot
-drift from what binding will look up), and `.figure()` runs once — the full
-mark/config validation gate (X1/X2) at compile time, in milliseconds, with
-no data ingestion (constraint 2). Placeholders are zero-row except for the
-aggregating kinds' channels, which bind the tiny shaped synthetic columns
-recorded in `plan._SYNTHETIC_CHANNELS` (see "Kind coverage" below). The canonical JSON of the tree
+drift from what binding will look up), and `.figure()` runs once under
+`xy.structural_probe()` — the full mark/config validation gate (X1/X2) at
+compile time, in milliseconds, with no data ingestion (constraint 2).
+Every placeholder is zero-row; data-requiring builders validate config and
+emit no trace, so the probe contains no synthetic values (see "Kind coverage"
+below). The canonical JSON of the tree
 (`plan_version: 1`) is content-addressed into a sha256-prefix `digest` and
 registered in a process-local `{digest: plan}` map. Fact X4 ("page bodies
 run in every worker") turned out to hold only for processes that run the
@@ -607,7 +608,7 @@ never touches the registry.
 **Kind coverage (recorded decision, revised 2026-08 twice).** Flat
 factories exist for **every standalone mark kind**: scatter, line,
 histogram, bar, area, step, stem, column, errorbar, error_band, segments,
-triangle_mesh, box, violin, ecdf, hexbin, contour, heatmap, stairs — each
+triangle_mesh, funnel, box, violin, ecdf, hexbin, contour, heatmap, stairs — each
 derived from the mark's signature, and the composed
 `reflex_xy.chart(*nodes, data=...)` accepts any mix of those marks plus
 annotations and chrome. The aggregating kinds were first excluded (their
@@ -620,7 +621,7 @@ real aggregation at page evaluation. The resolution is a core validation
 seam instead of cleverer data: the probe compiles under
 `xy.structural_probe()` (spec/api/chart-kind-contract.md "Structural
 probe"), where a mark with all-empty channels validates configuration and
-skips aggregation. Every kind probes **zero-row**; there is no synthetic
+skips its data-dependent work. Every kind probes **zero-row**; there is no synthetic
 data anywhere; configuration errors (bad enums/bounds/colormaps/range
 shapes) still fail `reflex run`; data-dependent outcomes (range
 filtering, mincnt, quantiles, marching) and real-data shape couplings

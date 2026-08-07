@@ -51,7 +51,7 @@ streaming (§3), and ``reflex_xy.inline`` for shared fixed data (§5–§7).
     so one fixed plan swaps between two column sets from state; both
     branches share the schema and stay compile-checked.
 
-A second page, ``/kinds``, renders **every chart kind**: all 19 standalone
+A second page, ``/kinds``, renders **every chart kind**: all 20 standalone
 mark kinds as data-bound flat factories fed by one ``@reflex_xy.data`` var
 (mixed column lengths and a 2-D grid in a single var), and the composite
 kinds (pie, radar, sankey, polar, polar bars, wind rose, facet) on the
@@ -919,6 +919,8 @@ class KindCols(TypedDict):
     seg_y0: np.ndarray
     seg_x1: np.ndarray
     seg_y1: np.ndarray
+    funnel_stage: np.ndarray
+    funnel_value: np.ndarray
     bv: np.ndarray
     bg: np.ndarray
     grid: np.ndarray
@@ -971,6 +973,8 @@ def _kind_columns() -> dict[str, np.ndarray]:
         "seg_y0": rng.uniform(0.0, 10.0, 36),
         "seg_x1": rng.uniform(0.0, 10.0, 36),
         "seg_y1": rng.uniform(0.0, 10.0, 36),
+        "funnel_stage": np.array(["Visit", "Signup", "Activate", "Pay"]),
+        "funnel_value": np.array([9800.0, 6200.0, 3100.0, 1450.0]),
         "bv": bv,
         "bg": np.repeat([1.0, 2.0, 3.0], 300),
         "grid": grid,
@@ -986,7 +990,7 @@ def _kind_columns() -> dict[str, np.ndarray]:
 
 
 class Kinds(rx.State):
-    """One data var feeds all 19 data-bound kind charts on /kinds."""
+    """One data var feeds all 20 data-bound kind charts on /kinds."""
 
     @reflex_xy.data
     def table(self) -> KindCols:
@@ -1099,6 +1103,15 @@ def kinds() -> rx.Component:
                 data=Kinds.table, x0="seg_x0", y0="seg_y0", x1="seg_x1", y1="seg_y1", height=height
             ),
         ),
+        (
+            "funnel",
+            reflex_xy.funnel_chart(
+                data=Kinds.table,
+                stage="funnel_stage",
+                value="funnel_value",
+                height=height,
+            ),
+        ),
         ("box", reflex_xy.box_chart(data=Kinds.table, values="bv", group="bg", height=height)),
         (
             "violin",
@@ -1137,7 +1150,7 @@ def kinds() -> rx.Component:
         rx.vstack(
             rx.heading("Every chart kind", size="8"),
             rx.text(
-                "19 standalone mark kinds, data-bound: one @reflex_xy.data var "
+                "20 standalone mark kinds, data-bound: one @reflex_xy.data var "
                 "supplies every column (mixed lengths and a 2-D grid in one "
                 "var); each chart is a compile-validated plan.",
                 color_scheme="gray",

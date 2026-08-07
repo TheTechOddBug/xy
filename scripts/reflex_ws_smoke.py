@@ -18,7 +18,7 @@ design:
    `rx.foreach` small multiples over a `list[DataHandle]` var — new plan
    charts mount and subscribe live.
 6. Kind coverage: the /kinds page mounts and paints **every chart kind**
-   (19 data-bound plan charts + 7 static composites), pixel-probed per
+   (20 data-bound plan charts + 7 static composites), pixel-probed per
    `kind-<name>` cell — the compile guarantee is backed by a render
    guarantee.
 
@@ -389,13 +389,13 @@ def main() -> None:
         views_after = probe.eval("window.__xy_views.size")
         print(f"cond/foreach: {views_before} -> {views_after} mounted views after split toggle")
 
-        # 7) /kinds: every chart kind renders in the browser — 19 data-bound
+        # 7) /kinds: every chart kind renders in the browser — 20 data-bound
         #    plan charts plus the 7 static composites. Each `kind-<name>`
         #    cell must hold a canvas that paints real ink (a compile-only
         #    guarantee is not a render guarantee).
         probe._call("Page.navigate", {"url": args.frontend.rstrip("/") + "/kinds"})
         probe.wait_for(
-            "window.__xy_views && window.__xy_views.size >= 26",
+            "window.__xy_views && window.__xy_views.size >= 27",
             timeout_s=120.0,
             label="mounted /kinds chart views",
         )
@@ -413,6 +413,7 @@ def main() -> None:
             "errorbar",
             "error_band",
             "segments",
+            "funnel",
             "box",
             "violin",
             "ecdf",

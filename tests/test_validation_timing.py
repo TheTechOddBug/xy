@@ -8,10 +8,10 @@ chart *plans* by binding zero-row placeholder columns and calling
 
 - X1: the tree is cheap to build without data; chrome nodes validate
   eagerly; mark config validates at ``.figure()``.
-- X2: zero-row columns compile for **every** mark kind — directly for the
-  non-aggregating kinds, and under ``structural_probe()`` for the
-  aggregating kinds, whose marks then validate configuration and skip
-  aggregation instead of refusing empty input. No synthetic data exists
+- X2: zero-row columns compile for **every** mark kind — directly for marks
+  whose validators accept empty input, and under ``structural_probe()`` for
+  data-requiring marks (the aggregating kinds and funnel), which validate
+  configuration and skip data work instead of refusing. No synthetic data exists
   anywhere in the probe: a probe failure indicts structure, never
   invented values.
 - X3: ``Chart.figure()`` memoizes and is never invalidated — rebinding data
@@ -50,10 +50,10 @@ ZERO_ROW_CHARTS = {
     ),
 }
 
-# The aggregating kinds refuse zero rows in a normal build (their validators
-# need at least one finite value) but compile zero-row under the structural
-# probe: config validates, aggregation is skipped, no trace is contributed.
-AGGREGATING_CHARTS = {
+# These data-requiring kinds refuse zero rows in a normal build but compile
+# zero-row under the structural probe: config validates, data work is skipped,
+# and no trace is contributed. Most aggregate; funnel builds stage geometry.
+PROBE_ONLY_CHARTS = {
     "box": lambda: xy.box_chart(xy.box(EMPTY, group=EMPTY)),
     "violin": lambda: xy.violin_chart(xy.violin(EMPTY)),
     "hexbin": lambda: xy.hexbin_chart(xy.hexbin(EMPTY, EMPTY)),
@@ -61,12 +61,13 @@ AGGREGATING_CHARTS = {
     "heatmap": lambda: xy.heatmap_chart(xy.heatmap(EMPTY, x=EMPTY, y=EMPTY)),
     "stairs": lambda: xy.stairs_chart(xy.stairs(EMPTY, EMPTY)),
     "ecdf": lambda: xy.ecdf_chart(xy.ecdf(EMPTY)),
+    "funnel": lambda: xy.funnel_chart(xy.funnel(EMPTY, EMPTY)),
     "histogram_density": lambda: xy.histogram_chart(xy.histogram(EMPTY, density=True)),
 }
 
 # Config errors the structural probe must still raise with empty channels:
 # no data does not mean no validation. One representative per kind.
-AGGREGATING_CONFIG_ERRORS = {
+PROBE_CONFIG_ERRORS = {
     "box": (lambda: xy.box_chart(xy.box(EMPTY, orientation="diagonal")), "orientation"),
     "violin": (lambda: xy.violin_chart(xy.violin(EMPTY, bins=2)), "bins"),
     "hexbin": (lambda: xy.hexbin_chart(xy.hexbin(EMPTY, EMPTY, gridsize=0)), "gridsize"),
@@ -79,6 +80,15 @@ AGGREGATING_CONFIG_ERRORS = {
     "heatmap": (lambda: xy.heatmap_chart(xy.heatmap(EMPTY, colormap="virids")), "colormap"),
     "stairs": (lambda: xy.stairs_chart(xy.stairs(EMPTY, where="diagonal")), "where"),
     "ecdf": (lambda: xy.ecdf_chart(xy.ecdf(EMPTY, bins=-1)), "bins"),
+    "funnel_orientation": (
+        lambda: xy.funnel_chart(xy.funnel(EMPTY, EMPTY, orientation="diagonal")),
+        "orientation",
+    ),
+    "funnel_gap": (lambda: xy.funnel_chart(xy.funnel(EMPTY, EMPTY, gap=1.0)), "gap"),
+    "funnel_color": (
+        lambda: xy.funnel_chart(xy.funnel(EMPTY, EMPTY, color="not a color")),
+        "color",
+    ),
     "histogram": (lambda: xy.histogram_chart(xy.histogram(EMPTY, bins=-1)), "bins"),
 }
 
@@ -91,29 +101,29 @@ def test_zero_row_construction_compiles(kind):
     assert figure is not None
 
 
-@pytest.mark.parametrize("kind", sorted(AGGREGATING_CHARTS))
-def test_aggregating_kinds_compile_zero_row_under_structural_probe(kind):
-    """X2 for the aggregating kinds: under structural_probe() an all-empty
-    mark validates config and contributes no trace instead of refusing."""
+@pytest.mark.parametrize("kind", sorted(PROBE_ONLY_CHARTS))
+def test_data_requiring_kinds_compile_zero_row_under_structural_probe(kind):
+    """X2: under structural_probe(), an all-empty data-requiring mark
+    validates config and contributes no trace instead of refusing."""
     with structural_probe():
-        figure = AGGREGATING_CHARTS[kind]().figure()
+        figure = PROBE_ONLY_CHARTS[kind]().figure()
     assert figure is not None
     assert figure.traces == []
 
 
-@pytest.mark.parametrize("kind", sorted(AGGREGATING_CHARTS))
-def test_aggregating_kinds_still_refuse_zero_rows_normally(kind):
+@pytest.mark.parametrize("kind", sorted(PROBE_ONLY_CHARTS))
+def test_data_requiring_kinds_still_refuse_zero_rows_normally(kind):
     """Probe mode never leaks: outside structural_probe() the aggregating
     validators keep their at-least-one-value contract."""
     with pytest.raises(ValueError):
-        AGGREGATING_CHARTS[kind]().figure()
+        PROBE_ONLY_CHARTS[kind]().figure()
 
 
-@pytest.mark.parametrize("case", sorted(AGGREGATING_CONFIG_ERRORS))
+@pytest.mark.parametrize("case", sorted(PROBE_CONFIG_ERRORS))
 def test_structural_probe_still_raises_config_errors(case):
     """No synthetic data does not mean no validation: configuration errors
     surface in probe mode exactly as they do with real data."""
-    build, match = AGGREGATING_CONFIG_ERRORS[case]
+    build, match = PROBE_CONFIG_ERRORS[case]
     with structural_probe(), pytest.raises((ValueError, TypeError), match=match):
         build().figure()
 

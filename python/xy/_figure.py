@@ -625,6 +625,7 @@ class Figure(AnnotationsMixin, PayloadMixin):
     segments = _marks.segments
     ribbon = _marks.ribbon
     sankey = _marks.sankey
+    funnel = _marks.funnel
     triangle_mesh = _marks.triangle_mesh
     bar = _marks.bar
     column = _marks.column
@@ -672,8 +673,7 @@ class Figure(AnnotationsMixin, PayloadMixin):
             style["wedge_gap"] = gap
         stroke = self._optional_css_color(stroke, f"{kind} stroke")
         stroke_width = self._nonnegative_scalar(stroke_width, f"{kind} stroke_width")
-        if stroke is not None and stroke_width == 0.0:
-            stroke_width = 1.0
+        stroke_width = _marks._implied_stroke_width(stroke, stroke_width)
         fill_spec = _validate.mark_fill(fill, f"{kind} fill")
         if stroke is not None:
             style["stroke"] = stroke
@@ -852,6 +852,37 @@ class Figure(AnnotationsMixin, PayloadMixin):
     def _interaction_axes(self, name: str) -> list[str]:
         value = self.interaction.get(name)
         return list(self.axis_options) if value is None else self._axis_policy(value, name)
+
+    def _validate_funnel_axes(self) -> None:
+        """Refuse axis types the funnel geometry cannot draw truthfully.
+
+        A funnel's segments are centered on zero, so half its corners are
+        negative — a log cross axis maps them to NaN and a symlog one bends
+        the silhouette; a time cross axis has no meaning for widths. The
+        stage axis is categorical by construction, and a forced type
+        (`_axis_kind` lets a forced "time" beat the category registry) would
+        silently strip the stage labels. Every one of these *would* draw
+        something, and a plausible wrong picture is worse than an error (§28).
+        """
+        for t in self.traces:
+            if t.kind != "funnel":
+                continue
+            vertical = str(t.style.get("orientation", "vertical")) == "vertical"
+            cross_axis = t.x_axis if vertical else t.y_axis
+            stage_axis = t.y_axis if vertical else t.x_axis
+            cross_type = self.axis_options.get(cross_axis, {}).get("type")
+            if cross_type in {"log", "symlog", "time"}:
+                raise ValueError(
+                    f"funnel cross axis {cross_axis!r} cannot be {cross_type!r}: "
+                    "segments are centered on zero, so their widths only read "
+                    "on a linear axis"
+                )
+            stage_type = self.axis_options.get(stage_axis, {}).get("type")
+            if stage_type in {"log", "symlog", "time"}:
+                raise ValueError(
+                    f"funnel stage axis {stage_axis!r} cannot be {stage_type!r}: "
+                    "the stage axis is categorical (stage names in declared order)"
+                )
 
     def _validate_coords(self) -> None:
         """Refuse mark kinds the polar transform does not yet render correctly.
@@ -1765,6 +1796,15 @@ class Figure(AnnotationsMixin, PayloadMixin):
             # which ride in the `x`/`y` slots (ribbon geometry contract).
             if t.x0 is None or t.x1 is None or t.y0 is None or t.y1 is None:
                 raise ValueError("ribbon trace missing geometry columns")
+            return [t.x0, t.x1] if axis == "x" else [t.y0, t.y1, t.x, t.y]
+        if t.kind == "funnel":
+            # The generic x/y slots carry the trailing CROSS edges (funnel
+            # geometry contract), so they range on the cross axis — x for a
+            # vertical funnel, y for a horizontal one.
+            if t.x0 is None or t.x1 is None or t.y0 is None or t.y1 is None:
+                raise ValueError("funnel trace missing geometry columns")
+            if str(t.style.get("orientation", "vertical")) == "vertical":
+                return [t.x0, t.x1, t.x, t.y] if axis == "x" else [t.y0, t.y1]
             return [t.x0, t.x1] if axis == "x" else [t.y0, t.y1, t.x, t.y]
         if t.x0 is not None and t.x1 is not None and t.y0 is not None and t.y1 is not None:
             return [t.x0, t.x1] if axis == "x" else [t.y0, t.y1]

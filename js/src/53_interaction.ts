@@ -469,9 +469,31 @@ Object.assign(ChartView.prototype, {
   },
 
   _a11yPointGroups() {
-    return (this.gpuTraces || []).filter((g) =>
-      markOf(g.trace.kind).pointPick && g.tier !== "density" && g._cpu &&
-      g._cpu.x && g._cpu.y && Math.min(g._cpu.x.length, g._cpu.y.length) > 0);
+    // stageNav marks (funnel) traverse their per-stage centers in data order,
+    // which for a funnel is the declared stage order — the ordered process a
+    // screen reader should hear. Funnel navigation follows its visible stage
+    // geometry; ordinary point-series navigation deliberately keeps the full
+    // retained CPU rows even when the legend hides their paint, preserving
+    // the pre-funnel accessibility path and stable "Point N of total" count.
+    return (this.gpuTraces || []).filter((g) => {
+      const mark = markOf(g.trace.kind);
+      return (mark.pointPick || mark.stageNav) && g.tier !== "density" &&
+        (!mark.stageNav || !g._legendHidden) && g._cpu &&
+        g._cpu.x && g._cpu.y && this._a11yGroupCount(g) > 0;
+    });
+  },
+
+  // stageNav walks what is DRAWN: a funnel category filter narrows the group
+  // to its visible stages, and the row index stays in SHIPPED space (what
+  // tooltip_rows and the kernel exact-pick speak). Ordinary point marks retain
+  // their complete accessibility universe regardless of paint-only filtering.
+  _a11yGroupCount(g) {
+    if (markOf(g.trace.kind).stageNav && g._visMap) return g._visMap.length;
+    return Math.min(g._cpu.x.length, g._cpu.y.length);
+  },
+
+  _a11yGroupRow(g, offset) {
+    return markOf(g.trace.kind).stageNav && g._visMap ? g._visMap[offset] : offset;
   },
 
   _onA11yKey(e) {
@@ -538,7 +560,7 @@ Object.assign(ChartView.prototype, {
     // density handoff, or animated tier frame.
     if (this._interactionTransitionActive()) return;
     const groups = this._a11yPointGroups();
-    const total = groups.reduce((sum, g) => sum + Math.min(g._cpu.x.length, g._cpu.y.length), 0);
+    const total = groups.reduce((sum, g) => sum + this._a11yGroupCount(g), 0);
     if (!total) return;
     // Traversal intentionally follows trace/series data order, not visual x
     // order: sorting would change source-row identity and make streamed appends
@@ -552,15 +574,16 @@ Object.assign(ChartView.prototype, {
     let offset = flat;
     let g = groups[0];
     for (const candidate of groups) {
-      const n = Math.min(candidate._cpu.x.length, candidate._cpu.y.length);
+      const n = this._a11yGroupCount(candidate);
       if (offset < n) { g = candidate; break; }
       offset -= n;
     }
-    const hit = { trace: g.trace.id, index: offset, g };
+    const row = this._a11yGroupRow(g, offset);
+    const hit = { trace: g.trace.id, index: row, g };
     // Use the encoded numeric coordinates for positioning; _localRow may have
     // already converted categorical coordinates into display strings.
-    const xValue = this._decodeValue(g._cpu.x, g._cpu.xMeta || g.xMeta, offset);
-    const yValue = this._decodeValue(g._cpu.y, g._cpu.yMeta || g.yMeta, offset);
+    const xValue = this._decodeValue(g._cpu.x, g._cpu.xMeta || g.xMeta, row);
+    const yValue = this._decodeValue(g._cpu.y, g._cpu.yMeta || g.yMeta, row);
     const [chartX, chartY] = this._projectDataPoint(
       g.xAxis || "x",
       g.yAxis || "y",
@@ -1011,6 +1034,11 @@ Object.assign(ChartView.prototype, {
     let total = 0;
     for (const g of this.gpuTraces) {
       if (!g._cpu || g.tier === "density") continue;
+      // A stageNav mark retains `_cpu` as a KEYBOARD aid (funnel stage
+      // centers), not as selectable point geometry: its kind documents
+      // selection as absent, so counting those centers reported a selection
+      // the chart never drew.
+      if (markOf(g.trace.kind).stageNav) continue;
       // Restoration mirrors the kernel selection universe exactly. Otherwise
       // a provisional line/hidden-series mask would survive forever because
       // the authoritative reply only contains visible scatter trace ids.
@@ -1051,6 +1079,11 @@ Object.assign(ChartView.prototype, {
     for (const g of this.gpuTraces) {
       // _cpu only exists where the standalone entry retained copies (retainCpu).
       if (!g._cpu || g.tier === "density") continue;
+      // A stageNav mark retains `_cpu` as a KEYBOARD aid (funnel stage
+      // centers), not as selectable point geometry: its kind documents
+      // selection as absent, so counting those centers reported a selection
+      // the chart never drew.
+      if (markOf(g.trace.kind).stageNav) continue;
       if (opts.localMask === true
           && (g.trace.kind !== "scatter" || g._legendHidden)) continue;
       const cx = g._cpu.x, cy = g._cpu.y;

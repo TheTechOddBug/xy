@@ -60,6 +60,7 @@ def test_partition_table_is_the_public_contract():
         "ecdf_chart": {**base, "stroke_width": "width"},
         "error_band_chart": keyed,
         "errorbar_chart": {**keyed, "stroke_width": "width"},
+        "funnel_chart": keyed,
         "heatmap_chart": base,
         "hexbin_chart": base,
         "histogram_chart": base,
@@ -301,6 +302,7 @@ def test_curated_reexports_are_the_xy_constructors():
     """`reflex_xy.scatter` *is* `xy.scatter` (zero duplication), and a
     hallucinated constructor dies at import against the explicit map."""
     assert reflex_xy.scatter is xy.scatter
+    assert reflex_xy.funnel is xy.funnel
     assert reflex_xy.x_axis is xy.x_axis
     assert reflex_xy.legend is xy.legend
     assert reflex_xy.vline is xy.vline
@@ -310,7 +312,7 @@ def test_curated_reexports_are_the_xy_constructors():
 
 def test_every_flat_kind_compiles_a_plan(app_cwd):
     """The signature-derived factories cover every standalone mark kind —
-    zero-row-safe ones and the aggregating ones (shaped synthetic probe)."""
+    all compiled from zero-row columns under the structural probe."""
     from reflex_xy.factories import FLAT_KINDS
 
     calls = {
@@ -325,6 +327,7 @@ def test_every_flat_kind_compiles_a_plan(app_cwd):
         "errorbar_chart": dict(x="x", y="y", yerr="mag"),
         "error_band_chart": dict(x="x", lower="y", upper="mag"),
         "segments_chart": dict(x0="x", y0="y", x1="x", y1="mag"),
+        "funnel_chart": dict(stage="x", value="y", mark_key="mag"),
         "box_chart": dict(values="mag"),
         "violin_chart": dict(values="mag"),
         "ecdf_chart": dict(values="mag"),
@@ -340,11 +343,35 @@ def test_every_flat_kind_compiles_a_plan(app_cwd):
         assert "plan:" in str(comp), kind
 
 
-def test_aggregating_marks_compile_through_the_shaped_probe(app_cwd):
-    """The revised Phase 3 decision: aggregating marks probe with the shaped
-    synthetic columns recorded in plan._SYNTHETIC_CHANNELS, so they are
-    first-class in the plan tier (flat and composed) — while their config
-    validation still fires at compile like every other kind's."""
+def test_flat_funnel_preserves_core_chart_defaults(app_cwd, monkeypatch):
+    """The Reflex flat factory must retain funnel's semantic chrome rather
+    than compiling it as a generic one-mark chart."""
+    import reflex_xy.factories as factories
+
+    monkeypatch.setattr(factories, "_mount", lambda plan, _data, _kwargs: plan)
+    plan = reflex_xy.funnel_chart(data=FactoryDash.cloud, stage="x", value="y")
+    fig = plan.bind({"x": ["Visit", "Signup"], "y": [100.0, 62.0]}).figure()
+    spec, _ = fig.build_payload()
+    assert spec["x_axis"]["style"]["axis_color"] == "#00000000"
+    assert spec["y_axis"]["reverse"] is True
+    assert spec["show_legend"] is False
+
+    horizontal = reflex_xy.funnel_chart(
+        data=FactoryDash.cloud,
+        stage="x",
+        value="y",
+        orientation="horizontal",
+    )
+    horizontal_fig = horizontal.bind({"x": ["Visit", "Signup"], "y": [100.0, 62.0]}).figure()
+    horizontal_spec, _ = horizontal_fig.build_payload()
+    assert horizontal_spec["y_axis"]["style"]["axis_color"] == "#00000000"
+    assert horizontal_spec["x_axis"].get("reverse", False) is False
+
+
+def test_aggregating_marks_compile_through_the_structural_probe(app_cwd):
+    """Aggregating marks are first-class in the plan tier: the structural
+    probe uses empty columns, skips aggregation, and still validates config
+    at compile like every other kind."""
     comp = reflex_xy.chart(xy.box("mag"), xy.ecdf("mag"), data=FactoryDash.cloud)
     assert "plan:" in str(comp)
     with pytest.raises(ValueError, match="colormap"):

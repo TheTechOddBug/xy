@@ -81,6 +81,7 @@ __all__ = [
     "ecdf_chart",
     "error_band_chart",
     "errorbar_chart",
+    "funnel_chart",
     "heatmap_chart",
     "hexbin_chart",
     "histogram_chart",
@@ -236,6 +237,7 @@ FLAT_KINDS: dict[str, _FlatKind] = {
         _flat_kind("errorbar_chart", _xy.errorbar),
         _flat_kind("error_band_chart", _xy.error_band),
         _flat_kind("segments_chart", _xy.segments),
+        _flat_kind("funnel_chart", _xy.funnel),
         # Aggregating kinds: zero-row like everything else — under the
         # core's structural_probe() mode they validate config and skip
         # aggregation, so no synthetic data is ever invented for them.
@@ -415,7 +417,15 @@ def _mount(plan: ChartPlan, data: Any, component_kwargs: dict[str, Any]) -> Any:
 def _flat_chart(kind: _FlatKind, data: Any, kwargs: dict[str, Any]) -> Any:
     mark_kwargs, chart_kwargs, chrome, component_kwargs = _partition_flat(kind, kwargs)
     mark = kind.mark_factory(**mark_kwargs)
-    plan = build_plan(kind.chart_kind, (mark, *chrome), chart_kwargs)
+    if kind.chart_kind == "funnel_chart":
+        # Funnel owns semantic chrome defaults: hidden symmetric cross axis,
+        # reversed vertical stage axis, and hidden legend. Build its children
+        # through the core factory so the Reflex flat form cannot drift from
+        # those defaults; explicit chrome follows and therefore overrides it.
+        children = _xy.funnel_chart(mark, *chrome).children
+    else:
+        children = (mark, *chrome)
+    plan = build_plan(kind.chart_kind, children, chart_kwargs)
     _check_schema(plan, data)
     return _mount(plan, data, component_kwargs)
 
@@ -473,6 +483,11 @@ def error_band_chart(*, data: Any = None, **kwargs: Any) -> Any:
 def segments_chart(*, data: Any = None, **kwargs: Any) -> Any:
     """A data-bound segments chart (flat form; see module doc)."""
     return _flat_chart(FLAT_KINDS["segments_chart"], data, kwargs)
+
+
+def funnel_chart(*, data: Any = None, **kwargs: Any) -> Any:
+    """A data-bound funnel chart (flat form; see module doc)."""
+    return _flat_chart(FLAT_KINDS["funnel_chart"], data, kwargs)
 
 
 def box_chart(*, data: Any = None, **kwargs: Any) -> Any:

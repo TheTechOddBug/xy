@@ -420,9 +420,9 @@ The reassembled bytes are identical to the source blob, which is what keeps
 
 Two independent version constants:
 
-- **Renderer/spec protocol.** `PROTOCOL_VERSION = 12` (`python/xy/config.py`)
+- **Renderer/spec protocol.** `PROTOCOL_VERSION = 13` (`python/xy/config.py`)
   rides every first-paint spec as `spec["protocol"]`; the client's
-  `PROTOCOL = 12` (`js/src/00_header.ts`) is checked in the `ChartView`
+  `PROTOCOL = 13` (`js/src/00_header.ts`) is checked in the `ChartView`
   constructor. A mismatch replaces the chart element with "update the xy
   package and restart the kernel" and throws. Requests and replies carry no
   version of their own — the handshake happens once, at first paint, before
@@ -469,7 +469,13 @@ Two independent version constants:
   v11 client would silently draw a full circular, centre-origin view and route
   those grid/segment traces through their Cartesian paths. The v12 handshake
   rejects that stale bundle before any of those compatible-looking wrong
-  pictures can appear.
+  pictures can appear. v13 adds the `funnel` mark kind (per-stage symmetric
+  quads: six semantic geometry columns re-labelled `pos0`/`pos1`/`lo0`/`hi0`/
+  `lo1`/`hi1`, an `orientation` field, a per-stage paint channel, and semantic
+  `tooltip_rows` — the funnel geometry contract in
+  `spec/api/chart-kind-contract.md`). `markOf()` falls back to scatter for
+  unknown kinds, so a cached v12 client would silently draw every funnel as a
+  point cloud of trailing cross edges.
 - **Transport frame.** `FRAME_MAGIC` `"XYBF"` with `FRAME_VERSION = 1`
   versions the binary envelope separately, so the transport and the renderer
   can evolve without coupling.

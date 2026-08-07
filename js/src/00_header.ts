@@ -46,7 +46,22 @@
 // v12: polar angular axes carry `sector`/`grid_shape`, and radial axes carry
 // `hole`/`r_origin`. A v11 client would accept those fields but silently draw
 // full circular, centre-origin geometry.
-export const PROTOCOL = 12;
+// v13: the `funnel` trace kind. markOf() falls back to scatter for unknown
+// kinds, so a v12 client would silently render funnel quads as a point cloud.
+export const PROTOCOL = 13;
+
+// One wire-column -> generic GL-slot contract for funnel geometry. Object
+// insertion order is also the instance-attribute order used by build, filter,
+// animation, mix, and draw; keeping both facts here prevents one path from
+// silently swapping a quad edge while the others continue to look correct.
+export const FUNNEL_SLOTS = Object.freeze({
+  pos0: "x0",
+  pos1: "x1",
+  lo0: "y0",
+  hi0: "y1",
+  lo1: "x2",
+  hi1: "y2",
+});
 
 // Every GL buffer field a built trace — or a drill / sample-overlay clone of
 // one — can own. Teardown reads this list instead of a hand-kept subset: the

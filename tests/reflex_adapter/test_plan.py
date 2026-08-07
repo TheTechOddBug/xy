@@ -98,6 +98,43 @@ def test_structural_probe_still_fails_bad_aggregating_config():
             build_plan("chart", children, {})
 
 
+def test_funnel_plan_records_all_channels_and_binds_real_rows():
+    """An empty probe emits no funnel trace, but still discovers the key;
+    row/type validation and transition-key encoding run when data binds."""
+    plan = build_plan(
+        "funnel_chart",
+        (
+            xy.funnel(
+                "stage",
+                "value",
+                key="id",
+                animation=xy.animation(match="key"),
+            ),
+        ),
+        {},
+    )
+    assert plan.columns == ("stage", "value", "id")
+    fig = plan.bind(
+        {
+            "stage": ["Visit", "Signup", "Pay"],
+            "value": [100.0, 62.0, 21.0],
+            "id": ["visit", "signup", "pay"],
+        }
+    ).figure()
+    assert [trace.kind for trace in fig.traces] == ["funnel"]
+    assert fig.traces[0].transition_keys is not None
+    assert fig.traces[0].transition_keys.shape == (3, 2)
+
+
+def test_funnel_plan_probe_still_fails_bad_config():
+    with pytest.raises(ValueError, match="orientation"):
+        build_plan(
+            "funnel_chart",
+            (xy.funnel("stage", "value", orientation="diagonal"),),
+            {},
+        )
+
+
 def test_shared_columns_between_aggregating_and_zero_row_marks_probe():
     """The review's repro: stairs (values len k, edges len k+1) composed
     with a scatter that reads the same 'edges' column. Synthetic per-name

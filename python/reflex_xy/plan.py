@@ -11,7 +11,7 @@ node tree with **string channels only**, compiled once at page evaluation.
   X1/X2, pinned in tests/test_validation_timing.py) runs in milliseconds
   with no real data and **no invented data**: in probe mode a mark whose
   channels are all empty validates its configuration (enums, bounds,
-  colormaps, range shapes) and skips aggregation, so a probe failure always
+  colormaps, range shapes) and skips data-dependent work, so a probe failure always
   indicts the chart's structure, and no value-dependent check (hexbin
   range/mincnt filtering, contour marching, quantiles) can fire on
   placeholder values or allocate at page evaluation. Real-data shape
@@ -281,7 +281,7 @@ def build_plan(
 
     # The compile-time validation gate: bind zero-row placeholders for every
     # string channel and compile once under the core's structural-probe
-    # mode — configuration validates, aggregation never runs on invented
+    # mode — configuration validates, data-dependent work never runs on invented
     # values. Errors surface here — at page evaluation — with the ordinary
     # xy messages.
     probe = _ProbeTable()
