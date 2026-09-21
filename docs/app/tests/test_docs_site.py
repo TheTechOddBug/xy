@@ -32,6 +32,7 @@ from reflex_docgen.markdown import (
     TextBlock,
     parse_document,
 )
+from reflex_site_shared.components.blocks.typography import list_comp
 from reflex_site_shared.docs import render_markdown
 from reflex_site_shared.docs.content import discover_docs
 from reflex_site_shared.docs.markdown import _file_modules
@@ -3111,3 +3112,60 @@ def test_overview_navbar_marks_child_routes_current(
     item = _menu_item("Overview", "/docs/xy/")
     assert '"aria-current":(true ? "page" : null)' in str(item.children[0])
     assert "inset_0_-1px" not in str(item.class_name)
+
+
+def _accessibility_nodes(component):
+    """Walk rendered components without relying on sibling positions."""
+    yield component
+    for child in component.children:
+        yield from _accessibility_nodes(child)
+
+
+def test_mobile_breadcrumb_trigger_is_a_named_native_button() -> None:
+    """The mobile drawer trigger is keyboard operable with a meaningful name."""
+    page = next(
+        page for page in discover_docs(DOCS_CONFIG) if page.route == "/overview/installation/"
+    )
+    nodes = list(_accessibility_nodes(xy_docs_breadcrumb(page, xy_docs_sidebar(page.route))))
+    triggers = [node for node in nodes if node.tag == "Drawer.Trigger"]
+    assert len(triggers) == 1
+    buttons = [node for node in _accessibility_nodes(triggers[0]) if node.tag == "button"]
+    assert len(buttons) == 1
+    assert "Open documentation navigation" in str(buttons[0])
+    assert "focus-visible:outline" in str(buttons[0])
+
+
+def test_footer_navigation_has_section_headings() -> None:
+    """Footer sections follow a page heading without skipping to level four."""
+    page = next(
+        page for page in discover_docs(DOCS_CONFIG) if page.route == "/overview/installation/"
+    )
+    nodes = list(_accessibility_nodes(xy_docs_footer(page)))
+    headings = [node for node in nodes if node.tag in {"h1", "h2", "h3", "h4", "h5", "h6"}]
+    assert len(headings) == 3
+    assert all(node.tag == "h2" for node in headings)
+
+
+def test_installation_options_render_as_subsections_with_commands() -> None:
+    """Optional integrations retain headings and code without malformed lists."""
+    source = DOCS_ROOT / "overview" / "installation.md"
+    component = render_markdown(
+        source.read_text(encoding="utf-8"),
+        virtual_filepath="overview/installation.md",
+        filename=source.as_posix(),
+    )
+    nodes = list(_accessibility_nodes(component))
+    blocks = parse_document(source.read_text(encoding="utf-8")).blocks
+    headings = [block for block in blocks if isinstance(block, HeadingBlock) and block.level == 3]
+    assert [heading.children[0].text for heading in headings] == [
+        "Arrow input",
+        "Reflex integration",
+        "Optional browser export",
+    ]
+    item_tags = {"li", "RadixThemesListItem", list_comp(text="Example item").tag}
+    for node in nodes:
+        if node.tag in {"ul", "ol", "RadixThemesUnorderedList", "RadixThemesOrderedList"}:
+            assert all(child.tag in item_tags for child in node.children)
+    rendered = str(component)
+    for command in ("uv add pyarrow", 'uv add "xy[reflex]"', 'python -m pip install "xy[reflex]"'):
+        assert f"code:{json.dumps(command)}" in rendered
